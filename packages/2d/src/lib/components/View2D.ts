@@ -67,24 +67,11 @@ export class View2D extends Rect {
 
   /**
    * Weight for the current motion blur subframe.
-   * Used by nodes to adjust their rendering when motion blur is disabled.
+   * Used for weighting samples in accumulation.
    */
   @initial(1)
   @signal()
   public declare readonly motionBlurSubframeWeight: SimpleSignal<number, this>;
-
-  /**
-   * Rendering pass type for per-element motion blur control.
-   * 'blur' = only render elements with motion blur enabled
-   * 'static' = only render elements with motion blur disabled
-   * 'all' = render all elements (normal mode)
-   */
-  @initial('all')
-  @signal()
-  public declare readonly motionBlurRenderPass: SimpleSignal<
-    'blur' | 'static' | 'all',
-    this
-  >;
 
   public constructor(props: View2DProps) {
     super({

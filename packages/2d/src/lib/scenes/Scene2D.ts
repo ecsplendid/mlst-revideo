@@ -241,23 +241,20 @@ export class Scene2D extends GeneratorScene<View2D> implements Inspectable {
   }
 
   /**
-   * Set motion blur subframe context for per-element motion blur control.
+   * Set motion blur subframe context for rendering.
    *
    * @param subframeIndex - Current subframe index (0 to totalSubframes-1), or -1 to reset
    * @param totalSubframes - Total number of subframes being rendered
-   * @param weight - Weight for this subframe (for compensation calculations)
-   * @param renderPass - Which elements to render: 'blur', 'static', or 'all'
+   * @param weight - Weight for this subframe in accumulation
    */
   public setMotionBlurSubframe(
     subframeIndex: number,
     totalSubframes: number,
     weight: number,
-    renderPass: 'blur' | 'static' | 'all' = 'all',
   ): void {
     const view = this.getView();
     view.motionBlurSubframe(subframeIndex);
     view.motionBlurTotalSubframes(totalSubframes);
     view.motionBlurSubframeWeight(weight);
-    view.motionBlurRenderPass(renderPass);
   }
 }

@@ -459,24 +459,26 @@ export class Renderer {
     // Save original speed
     const originalSpeed = this.playback.speed;
 
-    // PASS 1: Render blur-enabled elements with accumulation
-    // We render at current position, then advance by subframeStep for each sample
+    // Temporarily modify playback speed for sub-frame steps
+    this.playback.speed = subframeStep;
+
+    // Render and accumulate each subframe
     for (let i = 0; i < samples; i++) {
       if (signal.aborted) {
         this.playback.speed = originalSpeed;
-        this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1, 'all');
+        // Reset motion blur context
+        this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1);
         return;
       }
 
-      // Set motion blur subframe context - only render blur-enabled elements
+      // Set motion blur subframe context
       this.playback.currentScene?.setMotionBlurSubframe?.(
         i,
         samples,
         weights[i],
-        'blur',
       );
 
-      // Render at current position (blur-enabled elements only)
+      // Render at current subframe position
       await this.stage.render(
         this.playback.currentScene!,
         this.playback.previousScene,
@@ -499,19 +501,8 @@ export class Renderer {
     // Finalize - write blurred result to canvas
     this.stage.finalizeMotionBlur();
 
-    // NOTE: We skip the static pass for now.
-    // The two-pass system (blur + static) only makes sense when nodes explicitly
-    // set motionBlur={{enabled: true/false}}. Without explicit settings, all nodes
-    // render in both passes, and the static pass would OVERWRITE the blur result.
-    //
-    // To enable per-element motion blur control, nodes need explicit settings:
-    // - motionBlur={{enabled: true}} -> only renders in blur pass (gets blurred)
-    // - motionBlur={{enabled: false}} -> only renders in static pass (stays sharp)
-    //
-    // For now, all elements get motion blur applied.
-
     // Reset motion blur context
-    this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1, 'all');
+    this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1);
   }
 
   private async getMediaByFrames(settings: RendererSettings) {
