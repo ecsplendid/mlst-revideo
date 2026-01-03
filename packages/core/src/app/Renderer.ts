@@ -295,6 +295,19 @@ export class Renderer {
 
     // Main rendering loop
     await this.playback.seek(from);
+
+    // Calculate motion blur frame advancement to compensate in main loop
+    const motionBlurConfig = this.stage.getMotionBlurConfig();
+    let motionBlurAdvancement = 0;
+    if (motionBlurConfig.enabled) {
+      const shutterFraction = motionBlurConfig.shutterAngle / 360;
+      const subframeStep = shutterFraction / motionBlurConfig.samples;
+      // Motion blur advances (samples - 1) times
+      motionBlurAdvancement = (motionBlurConfig.samples - 1) * subframeStep;
+    }
+    // Speed needed after motion blur to reach next integer frame
+    const compensatedSpeed = 1 - motionBlurAdvancement;
+
     try {
       this.estimator.reset(1 / (to - from));
       await this.exportFrame(signal);
@@ -306,7 +319,11 @@ export class Renderer {
       } else {
         let finished = false;
         while (!finished) {
+          // Advance to next frame, compensating for motion blur's advancement
+          this.playback.speed = motionBlurConfig.enabled ? compensatedSpeed : 1;
           await this.playback.progress();
+          this.playback.speed = 1; // Reset for motion blur's internal use
+
           await this.exportFrame(signal);
           this.estimator.update(
             clampRemap(from, to, 0, 1, this.playback.frame),
@@ -404,12 +421,15 @@ export class Renderer {
   /**
    * Export a frame with motion blur by rendering sub-frames and blending.
    *
-   * For true sub-frame motion blur, we advance the scene multiple times
-   * within the output frame's time window and blend the results.
+   * Motion Canvas uses generator-based animations that evaluate during progress(),
+   * not during render. So we must actually advance the scene through each subframe
+   * to get proper motion blur.
    *
-   * The shutter window determines how many sub-frames to blend:
-   * - shutterAngle 180° = blend samples within half a frame
-   * - shutterAngle 360° = blend samples within one full frame
+   * Strategy:
+   * 1. Save current frame position
+   * 2. Advance through subframe positions using progress() with small speed
+   * 3. Render and accumulate each subframe
+   * 4. Frame will naturally be at the right position for next iteration
    */
   private async exportFrameWithMotionBlur(
     signal: AbortSignal,
@@ -420,6 +440,11 @@ export class Renderer {
     // Calculate weights based on shutter curve (box/triangle/gaussian)
     const weights = calculateSubframeWeights(config);
 
+    // Calculate shutter window in frames
+    // shutterAngle 360° = 1 full frame, 180° = 0.5 frames
+    const shutterFraction = config.shutterAngle / 360;
+    const subframeStep = shutterFraction / samples;
+
     // Begin accumulation
     this.stage.beginMotionBlurAccumulation();
 
@@ -428,26 +453,17 @@ export class Renderer {
       console.log(
         `[Motion Blur] samples=${samples}, shutterAngle=${config.shutterAngle}°, curve=${config.shutterCurve}, position=${config.shutterPosition}`,
       );
+      console.log(`[Motion Blur] Subframe step: ${subframeStep.toFixed(4)} frames, total: ${(subframeStep * samples).toFixed(4)} frames`);
     }
 
-    // Render and accumulate each sub-frame
-    // We advance the scene by fractional amounts using playback.progress()
-    // with a modified speed setting
+    // Save original speed
     const originalSpeed = this.playback.speed;
 
-    // Calculate sub-frame step based on shutter angle
-    // shutterAngle 360 = 1 full frame, so each sample covers 1/samples of that
-    const shutterFraction = config.shutterAngle / 360;
-    const subFrameStep = shutterFraction / samples;
-
-    // Temporarily modify playback speed for sub-frame steps
-    this.playback.speed = subFrameStep;
-
     // PASS 1: Render blur-enabled elements with accumulation
+    // We render at current position, then advance by subframeStep for each sample
     for (let i = 0; i < samples; i++) {
       if (signal.aborted) {
         this.playback.speed = originalSpeed;
-        // Reset motion blur context
         this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1, 'all');
         return;
       }
@@ -469,8 +485,10 @@ export class Renderer {
       // Accumulate this sample with curve-based weight
       this.stage.accumulateMotionBlurSample(weights[i]);
 
-      // Advance by sub-frame step (except on last sample)
+      // Advance by subframe step to next sample position
+      // Skip advance on last sample - main loop will handle frame progression
       if (i < samples - 1) {
+        this.playback.speed = subframeStep;
         await this.playback.progress();
       }
     }
@@ -481,15 +499,16 @@ export class Renderer {
     // Finalize - write blurred result to canvas
     this.stage.finalizeMotionBlur();
 
-    // PASS 2: Render static (non-blurred) elements on top
-    // These render once at full opacity, composited over the blurred result
-    // Use clearCanvas: false to preserve the motion blur result
-    this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1, 'static');
-    await this.stage.render(
-      this.playback.currentScene!,
-      this.playback.previousScene,
-      {clearCanvas: false},
-    );
+    // NOTE: We skip the static pass for now.
+    // The two-pass system (blur + static) only makes sense when nodes explicitly
+    // set motionBlur={{enabled: true/false}}. Without explicit settings, all nodes
+    // render in both passes, and the static pass would OVERWRITE the blur result.
+    //
+    // To enable per-element motion blur control, nodes need explicit settings:
+    // - motionBlur={{enabled: true}} -> only renders in blur pass (gets blurred)
+    // - motionBlur={{enabled: false}} -> only renders in static pass (stays sharp)
+    //
+    // For now, all elements get motion blur applied.
 
     // Reset motion blur context
     this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1, 'all');
