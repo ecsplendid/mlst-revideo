@@ -8,7 +8,11 @@ import {
 } from '../exporter';
 import type {Scene} from '../scenes';
 import {clampRemap} from '../tweening';
-import {Vector2} from '../types';
+import {
+  calculateSubframeOffsets,
+  calculateSubframeWeights,
+  Vector2,
+} from '../types';
 import {Semaphore} from '../utils';
 import {PlaybackManager, PlaybackState} from './PlaybackManager';
 import {PlaybackStatus} from './PlaybackStatus';
@@ -363,10 +367,27 @@ export class Renderer {
 
   private async exportFrame(signal: AbortSignal) {
     this.frame.current = this.playback.frame;
-    await this.stage.render(
-      this.playback.currentScene!,
-      this.playback.previousScene,
-    );
+
+    const motionBlurConfig = this.stage.getMotionBlurConfig();
+
+    // Debug: log motion blur config on first frame
+    if (this.playback.frame === 0) {
+      console.log('[Motion Blur Debug] Config:', JSON.stringify(motionBlurConfig));
+    }
+
+    if (motionBlurConfig.enabled) {
+      // Render with motion blur using subframe accumulation
+      if (this.playback.frame === 0) {
+        console.log('[Motion Blur Debug] Using motion blur rendering path');
+      }
+      await this.exportFrameWithMotionBlur(signal, motionBlurConfig);
+    } else {
+      // Standard single-frame rendering
+      await this.stage.render(
+        this.playback.currentScene!,
+        this.playback.previousScene,
+      );
+    }
 
     const sceneFrame =
       this.playback.frame - this.playback.currentScene.firstFrame;
@@ -378,6 +399,100 @@ export class Renderer {
       this.playback.currentScene.name,
       signal,
     );
+  }
+
+  /**
+   * Export a frame with motion blur by rendering sub-frames and blending.
+   *
+   * For true sub-frame motion blur, we advance the scene multiple times
+   * within the output frame's time window and blend the results.
+   *
+   * The shutter window determines how many sub-frames to blend:
+   * - shutterAngle 180° = blend samples within half a frame
+   * - shutterAngle 360° = blend samples within one full frame
+   */
+  private async exportFrameWithMotionBlur(
+    signal: AbortSignal,
+    config: ReturnType<typeof this.stage.getMotionBlurConfig>,
+  ) {
+    const samples = config.samples;
+
+    // Calculate weights based on shutter curve (box/triangle/gaussian)
+    const weights = calculateSubframeWeights(config);
+
+    // Begin accumulation
+    this.stage.beginMotionBlurAccumulation();
+
+    // Debug: log on first frame
+    if (this.playback.frame === 0) {
+      console.log(
+        `[Motion Blur] samples=${samples}, shutterAngle=${config.shutterAngle}°, curve=${config.shutterCurve}, position=${config.shutterPosition}`,
+      );
+    }
+
+    // Render and accumulate each sub-frame
+    // We advance the scene by fractional amounts using playback.progress()
+    // with a modified speed setting
+    const originalSpeed = this.playback.speed;
+
+    // Calculate sub-frame step based on shutter angle
+    // shutterAngle 360 = 1 full frame, so each sample covers 1/samples of that
+    const shutterFraction = config.shutterAngle / 360;
+    const subFrameStep = shutterFraction / samples;
+
+    // Temporarily modify playback speed for sub-frame steps
+    this.playback.speed = subFrameStep;
+
+    // PASS 1: Render blur-enabled elements with accumulation
+    for (let i = 0; i < samples; i++) {
+      if (signal.aborted) {
+        this.playback.speed = originalSpeed;
+        // Reset motion blur context
+        this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1, 'all');
+        return;
+      }
+
+      // Set motion blur subframe context - only render blur-enabled elements
+      this.playback.currentScene?.setMotionBlurSubframe?.(
+        i,
+        samples,
+        weights[i],
+        'blur',
+      );
+
+      // Render at current position (blur-enabled elements only)
+      await this.stage.render(
+        this.playback.currentScene!,
+        this.playback.previousScene,
+      );
+
+      // Accumulate this sample with curve-based weight
+      this.stage.accumulateMotionBlurSample(weights[i]);
+
+      // Advance by sub-frame step (except on last sample)
+      if (i < samples - 1) {
+        await this.playback.progress();
+      }
+    }
+
+    // Restore original speed
+    this.playback.speed = originalSpeed;
+
+    // Finalize - write blurred result to canvas
+    this.stage.finalizeMotionBlur();
+
+    // PASS 2: Render static (non-blurred) elements on top
+    // These render once at full opacity, composited over the blurred result
+    // Use clearCanvas: false to preserve the motion blur result
+    this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1, 'static');
+    await this.stage.render(
+      this.playback.currentScene!,
+      this.playback.previousScene,
+      {clearCanvas: false},
+    );
+
+    // Reset motion blur context
+    this.playback.currentScene?.setMotionBlurSubframe?.(-1, 0, 1, 'all');
   }
 
   private async getMediaByFrames(settings: RendererSettings) {

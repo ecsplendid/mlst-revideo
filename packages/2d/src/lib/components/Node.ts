@@ -1,5 +1,6 @@
 import type {
   ColorSignal,
+  MotionBlurOptions,
   PossibleColor,
   PossibleSpacing,
   PossibleVector2,
@@ -124,6 +125,35 @@ export interface NodeProps {
    * @experimental
    */
   shaders?: PossibleShaderConfig;
+
+  /**
+   * Motion blur configuration for this node.
+   *
+   * When set, this overrides the scene-level motion blur settings for this
+   * specific element and its children (unless they have their own settings).
+   *
+   * @example
+   * Enable motion blur on a specific element:
+   * ```tsx
+   * <Circle motionBlur={{enabled: true, samples: 16}} />
+   * ```
+   *
+   * Disable motion blur for a specific element (even if scene has it enabled):
+   * ```tsx
+   * <Circle motionBlur={{enabled: false}} />
+   * ```
+   *
+   * Configure custom shutter angle and samples:
+   * ```tsx
+   * <Circle motionBlur={{
+   *   enabled: true,
+   *   samples: 24,
+   *   shutterAngle: 270,  // More blur
+   *   shutterPhase: -135, // Centered
+   * }} />
+   * ```
+   */
+  motionBlur?: SignalValue<MotionBlurOptions | null>;
 }
 
 @nodeName('Node')
@@ -439,6 +469,21 @@ export class Node implements Promisable<Node> {
   public declare readonly shaders: Signal<
     PossibleShaderConfig,
     ShaderConfig[],
+    this
+  >;
+
+  /**
+   * Motion blur configuration for this node.
+   *
+   * @remarks
+   * When set, this overrides the scene-level motion blur settings for this
+   * specific element. Set to `{enabled: false}` to disable motion blur for
+   * this element even when the scene has motion blur enabled.
+   */
+  @initial(null)
+  @signal()
+  public declare readonly motionBlur: SimpleSignal<
+    MotionBlurOptions | null,
     this
   >;
 
@@ -1637,6 +1682,26 @@ export class Node implements Promisable<Node> {
   public async render(context: CanvasRenderingContext2D) {
     if (this.absoluteOpacity() <= 0) {
       return;
+    }
+
+    // Per-element motion blur control:
+    // Check the current render pass and this node's motion blur setting
+    const renderPass = this.view2D?.motionBlurRenderPass?.() ?? 'all';
+    const nodeMotionBlur = this.motionBlur?.();
+
+    // Only apply render pass filtering to nodes that have an explicit motionBlur setting.
+    // Nodes with null (default) always render so their children can be processed.
+    if (renderPass !== 'all' && nodeMotionBlur !== null) {
+      const nodeWantsBlur = nodeMotionBlur.enabled !== false;
+
+      if (renderPass === 'blur' && !nodeWantsBlur) {
+        // Blur pass: skip elements that explicitly disabled blur
+        return;
+      }
+      if (renderPass === 'static' && nodeWantsBlur) {
+        // Static pass: skip elements that explicitly enabled blur
+        return;
+      }
     }
 
     context.save();

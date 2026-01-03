@@ -48,6 +48,44 @@ export class View2D extends Rect {
   @signal()
   public declare readonly assetHash: SimpleSignal<string, this>;
 
+  /**
+   * Current motion blur subframe index during rendering.
+   * -1 = not in motion blur mode (normal rendering)
+   * 0+ = current subframe index
+   */
+  @initial(-1)
+  @signal()
+  public declare readonly motionBlurSubframe: SimpleSignal<number, this>;
+
+  /**
+   * Total number of motion blur subframes being rendered.
+   * 0 = not in motion blur mode
+   */
+  @initial(0)
+  @signal()
+  public declare readonly motionBlurTotalSubframes: SimpleSignal<number, this>;
+
+  /**
+   * Weight for the current motion blur subframe.
+   * Used by nodes to adjust their rendering when motion blur is disabled.
+   */
+  @initial(1)
+  @signal()
+  public declare readonly motionBlurSubframeWeight: SimpleSignal<number, this>;
+
+  /**
+   * Rendering pass type for per-element motion blur control.
+   * 'blur' = only render elements with motion blur enabled
+   * 'static' = only render elements with motion blur disabled
+   * 'all' = render all elements (normal mode)
+   */
+  @initial('all')
+  @signal()
+  public declare readonly motionBlurRenderPass: SimpleSignal<
+    'blur' | 'static' | 'all',
+    this
+  >;
+
   public constructor(props: View2DProps) {
     super({
       composite: true,
